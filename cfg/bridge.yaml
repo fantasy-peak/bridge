@@ -1,0 +1,21 @@
+---
+http_server_config: ../cfg/config.json
+interface_lib_path: ./interface/libbridge_interface.so
+
+redis_config:
+  {
+    connection_options: { host: "127.0.0.1", port: 6378, db: 0 },
+    connection_pool_options: { size: 100 },
+    threads: 8,
+  }
+
+configs:
+  [
+    {
+      path: "/hello",
+      methods: ["Get", "Post"],
+      endpoint: "http://127.0.0.1:8077",
+      before_func_name: "brforeTest",
+      after_func_name: "afterTest",
+    },
+  ]
