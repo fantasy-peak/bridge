@@ -16,7 +16,7 @@ if(NOT EXISTS "${CMAKE_BINARY_DIR}/xrepo.cmake")
 endif()
 
 set(XREPO_PACKAGE_VERBOSE ON)
-set(XREPO_BOOTSTRAP_XMAKE OFF)
+set(XREPO_BOOTSTRAP_XMAKE ON)
 set(XREPO_BUILD_PARALLEL_JOBS 12)
 set(XMAKE_RELEASE_LATEST v2.6.8)
 
@@ -28,7 +28,6 @@ if(NOT EXISTS "$ENV{HOME}/.xmake/repositories/my_private_repo/xmake.lua")
 endif()
 
 #----------------------------------------------------------------------------------
-set(XREPO_XMAKEFILE ${CMAKE_CURRENT_SOURCE_DIR}/repo/packages/a/async_simple/xmake.lua)
 xrepo_package("asio")
 xrepo_package("async_simple main")
 xrepo_package("fmt")
