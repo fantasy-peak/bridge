@@ -116,9 +116,9 @@ int main(int argc, char** argv) {
 		spdlog::error("{}", error);
 		return -1;
 	}
-	spdlog::set_level(spdlog::level::debug);
+	spdlog::set_level(spdlog::level::info);
 	IoContextPool pool(cfg.value().threads);
-	std::jthread thd([&] { pool.start(); });
+	pool.start();
 	std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 	auto& context = pool.getIoContext();
 	asio::ip::tcp::acceptor acceptor(context);
