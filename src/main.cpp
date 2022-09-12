@@ -128,9 +128,11 @@ int main(int argc, char** argv) {
 	ss << endpoint;
 	spdlog::info("start accept at {} ...", ss.str());
 	acceptor.open(endpoint.protocol());
+	std::error_code ec;
+	acceptor.set_option(asio::detail::socket_option::integer<IPPROTO_TCP, TCP_FASTOPEN>(50), ec);
+	spdlog::info("start fastopen: {}", ec.message());
 	acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
 	acceptor.bind(endpoint);
-	std::error_code ec;
 	acceptor.listen(asio::socket_base::max_listen_connections, ec);
 	if (ec) {
 		spdlog::error("{}", ec.message());
