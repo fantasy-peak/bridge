@@ -1,3 +1,5 @@
+#define ASYNC_SIMPLE_HAS_NOT_AIO
+
 #include <ranges>
 
 #include <spdlog/spdlog.h>
