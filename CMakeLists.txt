@@ -18,13 +18,16 @@ endif()
 set(XREPO_PACKAGE_VERBOSE ON)
 set(XREPO_BOOTSTRAP_XMAKE ON)
 set(XREPO_BUILD_PARALLEL_JOBS 12)
-set(XMAKE_RELEASE_LATEST v2.6.8)
+set(XMAKE_RELEASE_LATEST v2.7.1)
 
 include(${CMAKE_BINARY_DIR}/xrepo.cmake)
-
 if(NOT EXISTS "$ENV{HOME}/.xmake/repositories/my_private_repo/xmake.lua")
-    message(STATUS "add my_private_repo https://github.com/fantasy-peak/xmake-repo.git")
-    execute_process(COMMAND xmake repo -a -g my_private_repo https://github.com/fantasy-peak/xmake-repo.git)
+    message(STATUS "add my_private_repo")
+    if(EXISTS ${CMAKE_BINARY_DIR}/xmake/install/bin/xmake)
+        execute_process(COMMAND ${CMAKE_BINARY_DIR}/xmake/install/bin/xmake repo -a -g my_private_repo https://github.com/fantasy-peak/xmake-repo.git)
+    else()
+        execute_process(COMMAND xmake repo -a -g my_private_repo https://github.com/fantasy-peak/xmake-repo.git)
+    endif()
 endif()
 
 #----------------------------------------------------------------------------------
@@ -37,5 +40,5 @@ xrepo_package("libuuid" CONFIGS "system=false")
 #-----------------------------------------------------------------------------------
 include_directories(include)
 add_executable(bridge src/main.cpp)
-xrepo_target_packages(bridge PUBLIC yaml_cpp_struct asio fmt spdlog async_simple NO_LINK_LIBRARIES)
+xrepo_target_packages(bridge NO_LINK_LIBRARIES PUBLIC yaml_cpp_struct asio fmt spdlog async_simple)
 target_link_libraries(bridge PUBLIC uuid yaml-cpp async_simple fmt pthread dl)
