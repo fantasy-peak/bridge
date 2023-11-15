@@ -32,13 +32,12 @@ endif()
 
 #----------------------------------------------------------------------------------
 xrepo_package("asio")
-xrepo_package("async_simple main")
-xrepo_package("fmt")
+xrepo_package("async_simple 81d56480bf6b1792ccc81479d366c4293c0d86ba")
 xrepo_package("spdlog")
 xrepo_package("yaml_cpp_struct v1.0.0" DEPS "magic_enum" "visit_struct" "yaml-cpp")
 xrepo_package("libuuid" CONFIGS "system=false")
 #-----------------------------------------------------------------------------------
 include_directories(include)
 add_executable(bridge src/main.cpp)
-xrepo_target_packages(bridge NO_LINK_LIBRARIES PUBLIC yaml_cpp_struct asio fmt spdlog async_simple)
-target_link_libraries(bridge PUBLIC uuid yaml-cpp async_simple fmt pthread dl)
+xrepo_target_packages(bridge NO_LINK_LIBRARIES PUBLIC yaml_cpp_struct asio spdlog async_simple libuuid)
+target_link_libraries(bridge PUBLIC uuid yaml-cpp async_simple pthread dl)

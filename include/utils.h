@@ -7,7 +7,6 @@
 
 #include <async_simple/coro/Lazy.h>
 #include <async_simple/coro/SyncAwait.h>
-#include <async_simple/executors/SimpleExecutor.h>
 #include <asio.hpp>
 
 class IoContextPool final {

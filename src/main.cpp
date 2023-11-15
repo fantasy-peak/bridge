@@ -126,9 +126,7 @@ int main(int argc, char** argv) {
 	asio::ip::tcp::acceptor acceptor(context);
 	asio::ip::tcp::resolver resolver(context);
 	asio::ip::tcp::endpoint endpoint = *resolver.resolve(cfg.value().host, std::to_string(cfg.value().port)).begin();
-	std::stringstream ss;
-	ss << endpoint;
-	spdlog::info("start accept at {} ...", ss.str());
+	spdlog::info("start accept at {} ...", endpoint.address().to_string());
 	acceptor.open(endpoint.protocol());
 	std::error_code ec;
 	acceptor.set_option(asio::detail::socket_option::integer<IPPROTO_TCP, TCP_FASTOPEN>(50), ec);
