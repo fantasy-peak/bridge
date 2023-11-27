@@ -1,134 +1,148 @@
-#define ASYNC_SIMPLE_HAS_NOT_AIO
-
+#include <iostream>
+#include <list>
 #include <ranges>
+#include <thread>
 
+#include <gflags/gflags.h>
 #include <spdlog/spdlog.h>
-#include <uuid/uuid.h>
-#include <yaml_cpp_struct.hpp>
+#include <asio.hpp>
+#include <asio/experimental/awaitable_operators.hpp>
 
-#include "utils.h"
-
-struct Config {
-	std::string host;
-	int16_t port;
-	std::vector<std::string> endpoints;
-	uint32_t threads;
-};
-YCS_ADD_STRUCT(Config, host, port, endpoints, threads)
+DEFINE_int32(threads, 8, "io threads");
+DEFINE_string(ip, "0.0.0.0", "listen ip");
+DEFINE_int32(port, 8848, "port");
+DEFINE_string(destination_ip, "www.baidu.com", "destination ip");
+DEFINE_string(destination_port, "443", "destination port");
 
 template <typename... Args>
-void close(Args... args) {
-	auto func = [](auto& sock_ptr) {
-		if (!sock_ptr->is_open())
+void close(Args&&... args) {
+	auto func = [](auto& sock) {
+		if (!sock.is_open())
 			return;
 		std::error_code ec;
-		sock_ptr->cancel(ec);
-		sock_ptr->shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-		sock_ptr->close(ec);
+		sock.cancel(ec);
+		sock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+		sock.close(ec);
 	};
 	(func(args), ...);
 }
 
 template <typename... Args>
-void set_option(Args... args) {
-	auto func = [](auto& sock_ptr) {
+void set_option(Args&&... args) {
+	auto func = [](auto& sock) {
 		std::error_code ec;
-		sock_ptr->set_option(asio::ip::tcp::no_delay(true), ec);
-		sock_ptr->set_option(asio::socket_base::keep_alive(true), ec);
+		sock.set_option(asio::ip::tcp::no_delay(true), ec);
+		sock.set_option(asio::socket_base::keep_alive(true), ec);
 	};
 	(func(args), ...);
 }
 
-async_simple::coro::Lazy<void> start_forward(std::shared_ptr<asio::ip::tcp::socket> read_sock_ptr,
-	std::shared_ptr<asio::ip::tcp::socket> write_socket_ptr, std::string flow_to) {
-	constexpr int32_t BufferLen{8192};
-	std::unique_ptr<uint8_t[]> buffer_ptr = std::make_unique<uint8_t[]>(BufferLen);
-	constexpr int32_t count = BufferLen - 1;
-	while (true) {
-		auto [ec, bytes_transferred] = co_await async_read_some(*read_sock_ptr, asio::buffer(buffer_ptr.get(), count));
-		if (ec) {
-			close(write_socket_ptr);
-			if (ec != asio::error::operation_aborted)
-				spdlog::warn("[forward] async_read_some [{}]: {}", flow_to, ec.message());
-			co_return;
-		}
-		if (auto [ec, _] = co_await async_write(*write_socket_ptr, asio::buffer(buffer_ptr.get(), bytes_transferred)); ec) {
-			close(read_sock_ptr);
-			if (ec != asio::error::operation_aborted)
-				spdlog::warn("[forward] async_write [{}]: {}", flow_to, ec.message());
-			co_return;
-		}
-		std::memset(buffer_ptr.get(), 0x00, bytes_transferred);
+asio::awaitable<void> start_session(asio::ip::tcp::socket sock) {
+	asio::ip::tcp::socket destination_socket(co_await asio::this_coro::executor);
+	asio::ip::tcp::socket client_socket(std::move(sock));
+	set_option(destination_socket, client_socket);
+
+	auto resolver = asio::ip::tcp::resolver(co_await asio::this_coro::executor);
+	auto [ec, results] = co_await resolver.async_resolve(FLAGS_destination_ip.data(), FLAGS_destination_port.data(), asio::as_tuple(asio::use_awaitable));
+	if (ec) {
+		SPDLOG_ERROR("async_resolve: {}, host: [{}]:[{}]", ec.message(), FLAGS_destination_ip, FLAGS_destination_port);
+		close(client_socket);
+		co_return;
 	}
+	// spdlog::debug("resolver_results size: [{}]", results.size());
+	// for (auto& endpoint : results) {
+	// 	std::stringstream ss;
+	// 	ss << endpoint.endpoint();
+	// 	spdlog::debug("results: [{}]", ss.str());
+	// }
+	if (auto [ec, count] = co_await asio::async_connect(destination_socket, results, asio::as_tuple(asio::use_awaitable)); ec) {
+		SPDLOG_ERROR("async_connect: {}", ec.message());
+		close(client_socket);
+		co_return;
+	}
+	auto transfer = [](asio::ip::tcp::socket& from, asio::ip::tcp::socket& to) -> asio::awaitable<void> {
+		std::array<unsigned char, 4096> data;
+		for (;;) {
+			auto [ec, n] = co_await from.async_read_some(asio::buffer(data, 4095), asio::as_tuple(asio::use_awaitable));
+			if (ec) {
+				close(to);
+				co_return;
+			}
+			if (auto [ec, _] = co_await asio::async_write(to, asio::buffer(data, n), asio::as_tuple(asio::use_awaitable)); ec) {
+				close(from);
+				co_return;
+			}
+		}
+	};
+	using namespace asio::experimental::awaitable_operators;
+	co_await (transfer(client_socket, destination_socket) && transfer(destination_socket, client_socket));
 	co_return;
 }
 
-async_simple::coro::Lazy<void> start_session(asio::ip::tcp::socket sock, std::shared_ptr<AsioExecutor> executor_ptr, Config& cfg) {
-	auto server_socket_ptr = std::make_shared<asio::ip::tcp::socket>(executor_ptr->m_io_context);
-	auto client_socket_ptr = std::make_shared<asio::ip::tcp::socket>(std::move(sock));
-	set_option(server_socket_ptr, client_socket_ptr);
+class IoContextPool final {
+public:
+	explicit IoContextPool(std::size_t);
 
-	auto to_vector = [](auto&& r) {
-		auto r_common = r | std::views::common;
-		return std::vector(r_common.begin(), r_common.end());
-	};
-	auto index = std::hash<std::string>()([]() {
-		uuid_t uuid;
-		char uuid_str[37]{};
-		uuid_generate_random(uuid);
-		uuid_unparse(uuid, uuid_str);
-		return std::string(uuid_str);
-	}()) % cfg.endpoints.size();
-	auto host_ports = to_vector(cfg.endpoints[index] | std::views::split(':') | std::views::transform([](auto&& rng) {
-		return std::string_view(&*rng.begin(), std::ranges::distance(rng.begin(), rng.end()));
-	}));
-	std::string server_host{host_ports[0]};
-	std::string server_port{host_ports[1]};
+	void start();
+	void stop();
 
-	asio::ip::tcp::resolver resolver{executor_ptr->m_io_context};
-	auto [resolver_ec, resolver_results] = co_await async_resolve(resolver, server_host, server_port);
-	if (resolver_ec) {
-		spdlog::error("async_resolve: {} host: [{}] port: [{}]", resolver_ec.message(), server_host, server_port);
-		close(client_socket_ptr);
-		co_return;
+	asio::io_context& getIoContext();
+
+private:
+	std::vector<std::shared_ptr<asio::io_context>> m_io_contexts;
+	std::list<asio::any_io_executor> m_work;
+	std::size_t m_next_io_context;
+	std::vector<std::jthread> m_threads;
+};
+
+inline IoContextPool::IoContextPool(std::size_t pool_size)
+	: m_next_io_context(0) {
+	if (pool_size == 0)
+		throw std::runtime_error("IoContextPool size is 0");
+	for (std::size_t i = 0; i < pool_size; ++i) {
+		auto io_context_ptr = std::make_shared<asio::io_context>();
+		m_io_contexts.emplace_back(io_context_ptr);
+		m_work.emplace_back(asio::require(io_context_ptr->get_executor(), asio::execution::outstanding_work.tracked));
 	}
-	spdlog::debug("resolver_results size: [{}]", resolver_results.size());
-	for (auto& endpoint : resolver_results) {
-		std::stringstream ss;
-		ss << endpoint.endpoint();
-		spdlog::debug("resolver_results: [{}]", ss.str());
-	}
+}
 
-	spdlog::debug("async_connect: [{}:{}]", server_host, server_port);
-	if (auto ec = co_await async_connect(executor_ptr->m_io_context, *server_socket_ptr, resolver_results); ec) {
-		spdlog::error("async_connect: {}, host: [{}] port: [{}]", ec.message(), server_host, server_port);
-		close(client_socket_ptr);
-		co_return;
-	}
-	spdlog::debug("Connected: [{}:{}]", server_host, server_port);
+inline void IoContextPool::start() {
+	for (auto& context : m_io_contexts)
+		m_threads.emplace_back(std::jthread([&] { context->run(); }));
+}
 
-	start_forward(client_socket_ptr, server_socket_ptr, "client-to-server").via(executor_ptr.get()).detach();
-	start_forward(server_socket_ptr, client_socket_ptr, "server-to-client").via(executor_ptr.get()).detach();
-	co_return;
+inline void IoContextPool::stop() {
+	for (auto& context_ptr : m_io_contexts)
+		context_ptr->stop();
+}
+
+inline asio::io_context& IoContextPool::getIoContext() {
+	asio::io_context& io_context = *m_io_contexts[m_next_io_context];
+	++m_next_io_context;
+	if (m_next_io_context == m_io_contexts.size())
+		m_next_io_context = 0;
+	return io_context;
 }
 
 int main(int argc, char** argv) {
-	auto [cfg, error] = yaml_cpp_struct::from_yaml<Config>(argv[1]);
-	if (!cfg) {
-		spdlog::error("{}", error);
-		return -1;
-	}
+	gflags ::SetVersionString("0.0.0.1");
+	gflags ::SetUsageMessage("Usage : ./ecgw-tester");
+	google::ParseCommandLineFlags(&argc, &argv, true);
+
 	spdlog::set_level(spdlog::level::info);
-	IoContextPool pool(cfg.value().threads);
+	IoContextPool pool(FLAGS_threads);
 	pool.start();
 	std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-	auto& context = pool.getIoContext();
+	IoContextPool accept_pool{1};
+	accept_pool.start();
+	auto& context = accept_pool.getIoContext();
 	asio::ip::tcp::acceptor acceptor(context);
-	asio::ip::tcp::resolver resolver(context);
-	asio::ip::tcp::endpoint endpoint = *resolver.resolve(cfg.value().host, std::to_string(cfg.value().port)).begin();
-	spdlog::info("start accept at {} ...", endpoint.address().to_string());
+
+	spdlog::info("start accept at {}:{} ...", FLAGS_ip, FLAGS_port);
+	asio::ip::tcp::endpoint endpoint(asio::ip::make_address(FLAGS_ip), FLAGS_port);
 	acceptor.open(endpoint.protocol());
 	std::error_code ec;
+
 	acceptor.set_option(asio::detail::socket_option::integer<IPPROTO_TCP, TCP_FASTOPEN>(50), ec);
 	spdlog::info("start fastopen: {}", ec.message());
 	acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
@@ -139,22 +153,29 @@ int main(int argc, char** argv) {
 		return -1;
 	}
 	asio::signal_set sigset(context, SIGINT, SIGTERM);
-	sigset.async_wait([&](const std::error_code&, int) { acceptor.close(); });
-	async_simple::coro::syncAwait([&]() -> async_simple::coro::Lazy<void> {
+	std::binary_semaphore smph_signal_main_to_thread{0};
+	sigset.async_wait([&](const std::error_code&, int) {
+		acceptor.close();
+		smph_signal_main_to_thread.release();
+	});
+	auto accept = [](auto& acceptor, auto& pool) -> asio::awaitable<void> {
 		while (true) {
 			auto& context = pool.getIoContext();
 			asio::ip::tcp::socket socket(context);
-			auto ec = co_await async_accept(acceptor, socket);
+			auto [ec] = co_await acceptor.async_accept(socket, asio::as_tuple(asio::use_awaitable));
 			if (ec) {
 				if (ec == asio::error::operation_aborted)
 					break;
 				spdlog::error("Accept failed, error: {}", ec.message());
 				continue;
 			}
-			auto executor = std::make_shared<AsioExecutor>(context);
-			start_session(std::move(socket), executor, cfg.value()).via(executor.get()).detach();
+			asio::co_spawn(context, start_session(std::move(socket)), asio::detached);
 		}
-	}());
+	};
+	asio::co_spawn(context, accept(acceptor, pool), asio::detached);
+	smph_signal_main_to_thread.acquire();
+	SPDLOG_INFO("stoped ...");
+	accept_pool.stop();
 	pool.stop();
 	return 0;
 }
